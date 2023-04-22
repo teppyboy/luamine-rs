@@ -4,9 +4,9 @@ use full_moon::{
     ast::{
         punctuated::{Pair, Punctuated},
         types::TypeSpecifier,
-        Assignment, Expression, LocalAssignment, Stmt, Var, Value,
+        Assignment, Block, Expression, LocalAssignment, Stmt, Value, Var,
     },
-    tokenizer::{Token, TokenReference, TokenType}, node::Node,
+    tokenizer::{Token, TokenReference, TokenType},
 };
 use std::{fs::read_to_string, path::PathBuf};
 
@@ -49,7 +49,6 @@ fn punctuate_exp<T>(arr: Punctuated<T>, puncutation: &TokenReference) -> Punctua
     new_arr
 }
 
-
 fn remove_whitespace_token(token: Vec<&Token>) -> Vec<Token> {
     let mut new_token: Vec<Token> = Vec::new();
     'forin: for x in token {
@@ -57,63 +56,54 @@ fn remove_whitespace_token(token: Vec<&Token>) -> Vec<Token> {
             TokenType::Whitespace { characters: _ } => {
                 continue 'forin;
             }
-            _ => {
-                new_token.push(x.clone())
-            }
+            _ => new_token.push(x.clone()),
         }
     }
     new_token
 }
 
 fn remove_whitespace(token_ref: TokenReference) -> TokenReference {
-    let mut leading_trivia: Vec<Token> = remove_whitespace_token(token_ref.leading_trivia().collect());
-    let mut trailing_trivia: Vec<Token> = remove_whitespace_token(token_ref.trailing_trivia().collect());
+    let leading_trivia: Vec<Token> = remove_whitespace_token(token_ref.leading_trivia().collect());
+    let trailing_trivia: Vec<Token> =
+        remove_whitespace_token(token_ref.trailing_trivia().collect());
     TokenReference::new(leading_trivia, token_ref.token().clone(), trailing_trivia)
 }
 
 fn remove_whitespace_value(value: Value) -> Value {
     match value {
-        Value::Number(x) => {
-            return Value::Number(remove_whitespace(x))
-        }
-        Value::String(x) => {
-            return Value::String(remove_whitespace(x))
-        }
-        Value::Symbol(x) => {
-            return Value::Symbol(remove_whitespace(x))
-        }
+        Value::Number(x) => return Value::Number(remove_whitespace(x)),
+        Value::String(x) => return Value::String(remove_whitespace(x)),
+        Value::Symbol(x) => return Value::Symbol(remove_whitespace(x)),
         _ => {}
     }
     value
-}   
+}
 
 fn remove_whitespace_exp(exp: Expression) -> Expression {
     //let (leading_trivia, trailing_trivia) = exp.surrounding_trivia();
     match exp {
-        Expression::Value { value, type_assertion: _ } => {
+        Expression::Value {
+            value,
+            type_assertion: _,
+        } => {
             let new_value = remove_whitespace_value(*value);
-            return Expression::Value { 
+            return Expression::Value {
                 value: Box::new(new_value),
-                type_assertion: None
-            }
+                type_assertion: None,
+            };
         }
         _ => {}
     }
     exp
 }
 
-fn main() {
-    println!("!!!NOT READY FOR PRODUCTION USE!!!");
-    println!("Lumine is cute :3");
-    let args = Args::parse();
-    println!("Reading file {}...", args.file);
-    let file = PathBuf::from(args.file);
-    let text = read_to_string(file).expect("read input file error");
-    let ast = full_moon::parse(text.as_str()).expect("parse lua script error");
-    // Parse Lua block
-    let block = ast.nodes();
-    let mut new_stmts: Vec<(Stmt, Option<TokenReference>)> = Vec::new();
+fn minify_block(block: &Block) -> Block {
     let eq_token: Option<TokenReference> = Some(TokenReference::symbol("=").unwrap());
+    let nil_symbol: Expression = Expression::Value {
+        value: Box::new(Value::Symbol(TokenReference::symbol("nil").unwrap())),
+        type_assertion: None,
+    };
+    let mut new_stmts: Vec<(Stmt, Option<TokenReference>)> = Vec::new();
     // Local assignments
     let mut local_names: Punctuated<TokenReference> = Punctuated::new();
     let mut local_expressions: Punctuated<Expression> = Punctuated::new();
@@ -126,13 +116,21 @@ fn main() {
         match stmt {
             Stmt::LocalAssignment(x) => {
                 let name_c = x.names().clone();
+                let exp_c = x.expressions().clone();
+                let diff_len = name_c.len() - exp_c.len();
                 for name in name_c {
                     println!("{:#?}", name);
                     local_names.push(Pair::new(remove_whitespace(name), None));
                 }
-                for exp in x.expressions().clone() {
+                for exp in exp_c {
                     println!("loop");
                     local_expressions.push(Pair::new(remove_whitespace_exp(exp), None));
+                }
+                println!("{} diff len between name value", diff_len);
+                if diff_len > 0 {
+                    for _ in 0..diff_len {
+                        local_expressions.push(Pair::new(nil_symbol.clone(), None));
+                    }
                 }
                 for var_type in x.type_specifiers() {
                     //println!("{:#?}", var_type);
@@ -150,9 +148,7 @@ fn main() {
                             let y = Var::Name(remove_whitespace(y.clone()));
                             global_vars.push(Pair::new(y, None))
                         }
-                        _ => {
-                            global_vars.push(Pair::new(var, None))
-                        }
+                        _ => global_vars.push(Pair::new(var, None)),
                     }
                 }
                 for exp in x.expressions().clone() {
@@ -182,9 +178,23 @@ fn main() {
         None,
     ));
     new_stmts.push((full_moon::ast::Stmt::Assignment(assignments), None));
+    block.clone().with_stmts(new_stmts)
+}
+
+fn main() {
+    println!("!!!NOT READY FOR PRODUCTION USE!!!");
+    println!("Lumine is cute :3");
+    let args = Args::parse();
+    println!("Reading file {}...", args.file);
+    let file = PathBuf::from(args.file);
+    let text = read_to_string(file).expect("read input file error");
+    let ast = full_moon::parse(text.as_str()).expect("parse lua script error");
+    // Parse Lua block
+    let block = ast.nodes();
+    let new_block = minify_block(block);
     //new_stmts.splice(0..0, s.iter().cloned());
     // Create a new AST
-    let new_ast = ast.clone().with_nodes(block.clone().with_stmts(new_stmts));
+    let new_ast = ast.clone().with_nodes(new_block);
     //println!("{:#?}", new_ast);
     println!("=== SCRIPT GENERATED ===");
     println!("-- Minified by luamine-rs\n{}", full_moon::print(&new_ast))
