@@ -11,6 +11,11 @@ var7 = "amogus3";var8 = "segs"
 
 function python(sksk, pypy) 
     local x = 999
+    local y = 666
+    local z,e,t,a = 'discord', 'discord', 'discord', 'discord'
+    xoxo = 'susu'
+    varpython = 'python123'
+    superamogus = true
     print(var1, var2, var8, var9, var7)
     print(sksk)
 end
