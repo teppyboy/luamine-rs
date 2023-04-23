@@ -4,7 +4,11 @@ An experimental Lua(u) minifier built using full-moon
 
 ## Features
 
-+ Assignments & local assignments minify
++ Assignments
++ Local assignments
++ Functions
++ Local functions
++ Function calls
 
 ## License
 
