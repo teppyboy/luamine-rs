@@ -2,23 +2,28 @@ use clap::Parser;
 use full_moon::{
     self,
     ast::{
+        luau::TypeSpecifier,
         punctuated::{Pair, Punctuated},
         span::ContainedSpan,
-        types::TypeSpecifier,
-        Assignment, Block, Call, Expression, Field, FunctionArgs, LocalAssignment, Parameter,
-        Prefix, Stmt, Suffix, Value, Var, Index,
+        Assignment, Block, Call, Expression, Field, FunctionArgs, Index, LocalAssignment,
+        Parameter, Prefix, Stmt, Suffix, Var,
     },
+    node::Node,
     tokenizer::{Token, TokenReference, TokenType},
 };
 use std::{fs::read_to_string, path::PathBuf};
+pub mod minifier;
 
-/// Lua minifier
+/// An experimental Lua(u) minifier built using full-moon
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// Path to lua file
     #[arg(short, long)]
     file: String,
+    /// Path to the output file, if not provided, prints to stdout
+    #[arg(short, long)]
+    output: Option<String>,
 }
 
 fn punctuate_name<T>(arr: Punctuated<T>, puncutation: &TokenReference) -> Punctuated<T> {
@@ -51,17 +56,22 @@ fn punctuate_exp<T>(arr: Punctuated<T>, puncutation: &TokenReference) -> Punctua
     new_arr
 }
 
-fn remove_whitespace_token(token: Vec<&Token>) -> Vec<Token> {
-    let mut new_token: Vec<Token> = Vec::new();
-    'forin: for x in token {
-        match x.token_type() {
+fn remove_whitespace_token(token: &mut Vec<&Token>) {
+    let mut i = 0;
+    println!("Initial token length: {}", token.len());
+    while i < token.len() {
+        println!("Current i: {}", i);
+        match token[i].token_type() {
             TokenType::Whitespace { characters: _ } => {
-                continue 'forin;
+                println!("Removing whitespace token: {:?}", token[i]);
+                token.remove(i);
             }
-            _ => new_token.push(x.clone()),
+            _ => {
+                i += 1;
+            }
         }
     }
-    new_token
+    println!("Final token vector: {:#?}", token);
 }
 
 fn remove_whitespace_leading(token_ref: &TokenReference) -> TokenReference {
@@ -70,62 +80,57 @@ fn remove_whitespace_leading(token_ref: &TokenReference) -> TokenReference {
             return TokenReference::symbol("").unwrap();
         }
         _ => {
-            let leading_trivia: Vec<Token> = remove_whitespace_token(token_ref.leading_trivia().collect());
-            let mut trailing_trivia: Vec<Token> = Vec::new();
-            for x in token_ref.trailing_trivia() {
-                trailing_trivia.push(x.clone());
-            }
-            return TokenReference::new(leading_trivia, token_ref.token().clone(), trailing_trivia);
+            let (mut leading_trivia, mut trailing_trivia) = token_ref.surrounding_trivia();
+            remove_whitespace_token(&mut leading_trivia);
+            TokenReference::new(
+                leading_trivia.into_iter().cloned().collect(),
+                token_ref.token().clone(),
+                trailing_trivia.into_iter().cloned().collect(),
+            )
         }
     }
 }
 
-fn remove_whitespace(token_ref: TokenReference) -> TokenReference {
+fn remove_whitespace(token_ref: &TokenReference) -> TokenReference {
     match token_ref.token().token_type() {
         TokenType::Whitespace { characters: _ } => {
             return TokenReference::symbol("").unwrap();
         }
         _ => {
-            let leading_trivia: Vec<Token> = remove_whitespace_token(token_ref.leading_trivia().collect());
-            let trailing_trivia: Vec<Token> =
-                remove_whitespace_token(token_ref.trailing_trivia().collect());
-            return TokenReference::new(leading_trivia, token_ref.token().clone(), trailing_trivia)
+            let (mut leading_trivia, mut trailing_trivia) = token_ref.surrounding_trivia();
+            remove_whitespace_token(&mut leading_trivia);
+            remove_whitespace_token(&mut trailing_trivia);
+            TokenReference::new(
+                leading_trivia.into_iter().cloned().collect(),
+                token_ref.token().clone(),
+                trailing_trivia.into_iter().cloned().collect(),
+            )
         }
     }
 }
 
-fn remove_whitespace_value(value: Value) -> Value {
-    match value {
-        Value::Number(x) => return Value::Number(remove_whitespace(x)),
-        Value::String(x) => return Value::String(remove_whitespace(x)),
-        Value::Symbol(x) => return Value::Symbol(remove_whitespace(x)),
-        _ => {}
-    }
-    value
-}
-
-fn remove_whitespace_cspan(c_span: &ContainedSpan) -> ContainedSpan{
+fn remove_whitespace_cspan(c_span: &ContainedSpan) -> ContainedSpan {
     let (cs_stoken, cs_etoken) = c_span.tokens();
-    let new_s = remove_whitespace(cs_stoken.clone());
-    let new_e = remove_whitespace(cs_etoken.clone());
+    let new_s = remove_whitespace(cs_stoken);
+    let new_e = remove_whitespace(cs_etoken);
     ContainedSpan::new(new_s, new_e)
 }
 
-fn remove_whitespace_exp(exp: Expression) -> Expression {
-    //let (leading_trivia, trailing_trivia) = exp.surrounding_trivia();
-    match exp {
-        Expression::Value {
-            value,
-            type_assertion: _,
-        } => {
-            let new_value = remove_whitespace_value(*value);
-            return Expression::Value {
-                value: Box::new(new_value),
-                type_assertion: None,
-            };
-        }
-        _ => {}
-    }
+fn remove_whitespace_exp(exp: &Expression) -> Expression {
+    let (mut leading_trivia, mut trailing_trivia) = exp.surrounding_trivia();
+    let exp = match exp {
+        Expression::Number(x) => Expression::Number(remove_whitespace(x)),
+        Expression::String(x) => Expression::String(remove_whitespace(x)),
+        Expression::Symbol(x) => Expression::Symbol(remove_whitespace(x)),
+        Expression::BinaryOperator { lhs, binop, rhs } => Expression::BinaryOperator {
+            lhs: Box::new(remove_whitespace_exp(*&lhs)),
+            binop: binop.clone(),
+            rhs: Box::new(remove_whitespace_exp(*&rhs)),
+        },
+        _ => {exp.clone()},
+    };
+    remove_whitespace_token(&mut leading_trivia);
+    remove_whitespace_token(&mut trailing_trivia);
     exp
 }
 
@@ -133,10 +138,12 @@ fn remove_whitespace_prefix(prefix: &Prefix) -> Prefix {
     let new_prefix: Prefix;
     match prefix {
         Prefix::Expression(y) => {
-            new_prefix = Prefix::Expression(remove_whitespace_exp(y.clone()));
+            let x= (**y).clone();
+            println!("Prefix Expression before: {:#?}", x);
+            new_prefix = Prefix::Expression(Box::new(remove_whitespace_exp(&x)));
         }
         Prefix::Name(y) => {
-            new_prefix = Prefix::Name(remove_whitespace(y.clone()));
+            new_prefix = Prefix::Name(remove_whitespace(y));
         }
         _ => {
             new_prefix = prefix.clone();
@@ -162,22 +169,22 @@ fn remove_whitespace_suffix(suffix: &Suffix) -> Suffix {
                 new_suffix = suffix.clone();
             }
         },
-        Suffix::Index(y) => {
-            match y {
-                Index::Brackets { brackets, expression } => {
-                    let new_expression =
-                        remove_whitespace_exp(expression.clone());
-                    let new_y = Index::Brackets {
-                        brackets: remove_whitespace_cspan(brackets),
-                        expression: new_expression,
-                    };
-                    new_suffix = Suffix::Index(new_y);
-                }
-                _ => {
-                    new_suffix = suffix.clone();
-                }
+        Suffix::Index(y) => match y {
+            Index::Brackets {
+                brackets,
+                expression,
+            } => {
+                let new_expression = remove_whitespace_exp(expression);
+                let new_y = Index::Brackets {
+                    brackets: remove_whitespace_cspan(brackets),
+                    expression: new_expression,
+                };
+                new_suffix = Suffix::Index(new_y);
             }
-        }
+            _ => {
+                new_suffix = suffix.clone();
+            }
+        },
         _ => {
             new_suffix = suffix.clone();
         }
@@ -194,7 +201,7 @@ fn minify_function_args(function_args: &FunctionArgs) -> FunctionArgs {
         } => {
             let mut new_args: Punctuated<Expression> = Punctuated::new();
             for arg in arguments {
-                let new_arg = remove_whitespace_exp(arg.clone());
+                let new_arg = remove_whitespace_exp(arg);
                 new_args.push(Pair::new(new_arg, None))
             }
             new_args = punctuate_name(new_args, &semicolon);
@@ -214,8 +221,8 @@ fn minify_function_args(function_args: &FunctionArgs) -> FunctionArgs {
                         equal,
                         value,
                     } => {
-                        let new_key = remove_whitespace_exp(key.clone());
-                        let new_value = remove_whitespace_exp(value.clone());
+                        let new_key = remove_whitespace_exp(key);
+                        let new_value = remove_whitespace_exp(value);
                         new_field = Field::ExpressionKey {
                             brackets: remove_whitespace_cspan(brackets),
                             key: new_key,
@@ -224,8 +231,8 @@ fn minify_function_args(function_args: &FunctionArgs) -> FunctionArgs {
                         }
                     }
                     Field::NameKey { key, equal, value } => {
-                        let new_key = remove_whitespace(key.clone());
-                        let new_value = remove_whitespace_exp(value.clone());
+                        let new_key = remove_whitespace(key);
+                        let new_value = remove_whitespace_exp(value);
                         new_field = Field::NameKey {
                             key: new_key,
                             equal: equal.clone(),
@@ -248,12 +255,9 @@ fn minify_function_args(function_args: &FunctionArgs) -> FunctionArgs {
 
 fn minify_block(block: &Block) -> Block {
     let eq_token: Option<TokenReference> = Some(TokenReference::symbol("=").unwrap());
-    let nil_symbol: Expression = Expression::Value {
-        value: Box::new(Value::Symbol(TokenReference::symbol("nil").unwrap())),
-        type_assertion: None,
-    };
+    let nil_symbol: Expression = Expression::Symbol(TokenReference::symbol("nil").unwrap());
     let mut new_stmts: Vec<(Stmt, Option<TokenReference>)> = Vec::new();
-    // Local assignments
+    // Local assignments`
     let mut local_names: Punctuated<TokenReference> = Punctuated::new();
     let mut local_expressions: Punctuated<Expression> = Punctuated::new();
     let mut local_types: Vec<Option<TypeSpecifier>> = Vec::new();
@@ -270,11 +274,11 @@ fn minify_block(block: &Block) -> Block {
                 let diff_len = name_c.len() - exp_c.len();
                 for name in name_c {
                     //println!("{:#?}", name);
-                    local_names.push(Pair::new(remove_whitespace(name), None));
+                    local_names.push(Pair::new(remove_whitespace(&name), None));
                 }
                 for exp in exp_c {
                     println!("loop");
-                    local_expressions.push(Pair::new(remove_whitespace_exp(exp), None));
+                    local_expressions.push(Pair::new(remove_whitespace_exp(&exp), None));
                 }
                 println!("{} diff len between name value", diff_len);
                 if diff_len > 0 {
@@ -291,11 +295,13 @@ fn minify_block(block: &Block) -> Block {
             Stmt::Assignment(x) => {
                 //println!("{:?}", x);
                 //println!("Found assignment {:?}", x);
+                println!("Found global var assignment {:?}", x);
                 for var in x.variables().clone() {
                     //println!("{:#?}", var.tokens());
                     match var {
                         Var::Name(ref y) => {
-                            let y = Var::Name(remove_whitespace(y.clone()));
+                            let y = Var::Name(remove_whitespace(y));
+                            println!("Pushing global var: {:#?}", y);
                             global_vars.push(Pair::new(y, None))
                         }
                         Var::Expression(y) => {
@@ -304,14 +310,22 @@ fn minify_block(block: &Block) -> Block {
                             for suffix in y.suffixes() {
                                 new_suffixes.push(remove_whitespace_suffix(suffix));
                             }
-                            let new_y = y.clone().with_prefix(new_prefix).with_suffixes(new_suffixes);
-                            global_vars.push(Pair::new(full_moon::ast::Var::Expression(new_y), None))
+                            let new_y = y
+                                .clone()
+                                .with_prefix(new_prefix)
+                                .with_suffixes(new_suffixes);
+                            global_vars.push(Pair::new(
+                                full_moon::ast::Var::Expression(Box::new(new_y)),
+                                None,
+                            ))
                         }
                         _ => global_vars.push(Pair::new(var, None)),
                     }
                 }
                 for exp in x.expressions().clone() {
-                    global_expressions.push(Pair::new(remove_whitespace_exp(exp), None))
+                    let new_exp = remove_whitespace_exp(&exp);
+                    println!("Pushing global expression: {:#?}", new_exp);
+                    global_expressions.push(Pair::new(new_exp, None))
                 }
             }
             Stmt::LocalFunction(x) => {
@@ -321,12 +335,12 @@ fn minify_block(block: &Block) -> Block {
                 let mut new_params: Punctuated<Parameter> = Punctuated::new();
                 for param in body.parameters() {
                     match param {
-                        Parameter::Ellipse(x) => {
-                            let new_param = Parameter::Ellipse(remove_whitespace(x.clone()));
+                        Parameter::Ellipsis(x) => {
+                            let new_param = Parameter::Ellipsis(remove_whitespace(x));
                             new_params.push(Pair::new(new_param, None));
                         }
                         Parameter::Name(x) => {
-                            let new_param = Parameter::Ellipse(remove_whitespace(x.clone()));
+                            let new_param = Parameter::Ellipsis(remove_whitespace(x));
                             new_params.push(Pair::new(new_param, None));
                         }
                         _ => {}
@@ -334,7 +348,7 @@ fn minify_block(block: &Block) -> Block {
                 }
                 new_params = punctuate_name(new_params, &semicolon);
                 let new_local = remove_whitespace_leading(x.local_token());
-                let new_end = remove_whitespace(body.end_token().clone());
+                let new_end = remove_whitespace(body.end_token());
                 let new_body = body
                     .clone()
                     .with_parameters_parentheses(new_parentheses)
@@ -358,19 +372,19 @@ fn minify_block(block: &Block) -> Block {
                 let mut new_params: Punctuated<Parameter> = Punctuated::new();
                 for param in body.parameters() {
                     match param {
-                        Parameter::Ellipse(x) => {
-                            let new_param = Parameter::Ellipse(remove_whitespace(x.clone()));
+                        Parameter::Ellipsis(x) => {
+                            let new_param = Parameter::Ellipsis(remove_whitespace(x));
                             new_params.push(Pair::new(new_param, None));
                         }
                         Parameter::Name(x) => {
-                            let new_param = Parameter::Ellipse(remove_whitespace(x.clone()));
+                            let new_param = Parameter::Ellipsis(remove_whitespace(x));
                             new_params.push(Pair::new(new_param, None));
                         }
                         _ => {}
                     }
                 }
                 new_params = punctuate_name(new_params, &semicolon);
-                let new_end = remove_whitespace(body.end_token().clone());
+                let new_end = remove_whitespace(body.end_token());
                 let new_body = body
                     .clone()
                     .with_parameters_parentheses(new_parentheses)
@@ -387,7 +401,7 @@ fn minify_block(block: &Block) -> Block {
                 ))
             }
             Stmt::FunctionCall(x) => {
-                println!("{:#?}", x);
+                // println!("{:#?}", x);
                 let new_prefix = remove_whitespace_prefix(x.prefix());
                 let mut new_suffixes: Vec<Suffix> = Vec::new();
                 for suffix in x.suffixes() {
@@ -457,6 +471,8 @@ fn main() {
     //println!("{:#?}", new_ast);
     println!("\n=== SCRIPT GENERATED ===\n");
     println!("-- Minified by luamine-rs");
-    println!("-- Code may not be usable, report bugs at: https://github.com/teppyboy/luamine-rs/issues");
-    println!("{}", full_moon::print(&new_ast))
+    println!(
+        "-- Code may not be usable, report bugs at: https://github.com/teppyboy/luamine-rs/issues"
+    );
+    println!("{}", &new_ast);
 }

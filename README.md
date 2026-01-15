@@ -12,4 +12,4 @@ An experimental Lua(u) minifier built using full-moon
 
 ## License
 
-MIT
+[MIT](./LICENSE)
