@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use full_moon::{
     self,
     ast::{
@@ -6,23 +8,26 @@ use full_moon::{
         Assignment, Block, Expression, Field, FunctionArgs, LocalAssignment, Parameter, Stmt,
         Suffix, Var,
     },
-    tokenizer::TokenReference,
+    tokenizer::{Token, TokenReference, TokenType},
 };
 
 use crate::minifier::constants::*;
 
-mod punctuator;
-mod whitespace;
 mod constants;
+mod punctuator;
+mod utils;
+mod whitespace;
 
 pub(crate) struct Minifier {
     code: String,
+    global_names: HashMap<String, String>,
 }
 
 impl Minifier {
     pub fn new(code: &str) -> Self {
         Minifier {
             code: String::from(code),
+            global_names: HashMap::new(),
         }
     }
 
@@ -86,7 +91,7 @@ impl Minifier {
         }
     }
 
-    fn minify_block(&self, block: &Block) -> Block {
+    fn minify_block(&mut self, block: &Block) -> Block {
         let mut new_stmts: Vec<(Stmt, Option<TokenReference>)> = Vec::new();
         // Local assignments`
         let mut local_names: Punctuated<TokenReference> = Punctuated::new();
@@ -128,12 +133,35 @@ impl Minifier {
                     println!("Found global var assignment {:?}", x);
                     for var in x.variables().clone() {
                         //println!("{:#?}", var.tokens());
+                        let y_out: Var;
                         match var {
-                            Var::Name(ref y) => {
-                                let y = Var::Name(whitespace::trim(y));
-                                println!("Pushing global var: {:#?}", y);
-                                global_vars.push(Pair::new(y, None))
-                            }
+                            Var::Name(ref y) => match y.token_type() {
+                                TokenType::Identifier { identifier } => {
+                                    let name_str = identifier.as_str();
+                                    println!(
+                                        "Mapping global variable '{}' to minified name",
+                                        name_str
+                                    );
+                                    if !self.global_names.contains_key(name_str) {
+                                        utils::generate_shortest_names(
+                                            &mut self.global_names,
+                                            name_str.to_string(),
+                                        );
+                                    }
+                                    let new_name_str = self.global_names.get(name_str).unwrap();
+                                    let new_token = TokenReference::new(
+                                        vec![],
+                                        Token::new(TokenType::Identifier {
+                                            identifier: new_name_str.clone().into(),
+                                        }),
+                                        vec![],
+                                    );
+                                    y_out = Var::Name(new_token);
+                                }
+                                _ => {
+                                    y_out = Var::Name(whitespace::trim(y));
+                                }
+                            },
                             Var::Expression(y) => {
                                 let new_prefix = whitespace::trim_prefix(y.prefix());
                                 let mut new_suffixes: Vec<Suffix> = Vec::new();
@@ -144,13 +172,13 @@ impl Minifier {
                                     .clone()
                                     .with_prefix(new_prefix)
                                     .with_suffixes(new_suffixes);
-                                global_vars.push(Pair::new(
-                                    full_moon::ast::Var::Expression(Box::new(new_y)),
-                                    None,
-                                ))
+                                y_out = Var::Expression(Box::new(new_y));
                             }
-                            _ => global_vars.push(Pair::new(var, None)),
+                            _ => {
+                                y_out = var.clone();
+                            }
                         }
+                        global_vars.push(Pair::new(y_out, None));
                     }
                     for exp in x.expressions().clone() {
                         let new_exp = whitespace::trim_exp(&exp);
@@ -187,7 +215,11 @@ impl Minifier {
                         .with_end_token(new_end);
                     let new_x = x
                         .clone()
-                        .with_function_token(whitespace::append(&whitespace::trim_leading(x.function_token()), true, true))
+                        .with_function_token(whitespace::append(
+                            &whitespace::trim_leading(x.function_token()),
+                            true,
+                            true,
+                        ))
                         .with_local_token(new_local)
                         .with_body(new_body);
                     new_stmts.push((
@@ -223,7 +255,11 @@ impl Minifier {
                         .with_end_token(new_end);
                     let new_x = x
                         .clone()
-                        .with_function_token(whitespace::append(&whitespace::trim_leading(x.function_token()), false, true))
+                        .with_function_token(whitespace::append(
+                            &whitespace::trim_leading(x.function_token()),
+                            false,
+                            true,
+                        ))
                         .with_body(new_body);
                     new_stmts.push((
                         full_moon::ast::Stmt::FunctionDeclaration(new_x),
@@ -241,10 +277,7 @@ impl Minifier {
                         .clone()
                         .with_prefix(new_prefix)
                         .with_suffixes(new_suffixes);
-                    new_stmts.push((
-                        full_moon::ast::Stmt::FunctionCall(new_x),
-                        SEMICOLON.clone(),
-                    ))
+                    new_stmts.push((full_moon::ast::Stmt::FunctionCall(new_x), SEMICOLON.clone()))
                 }
                 _ => {
                     // TODO: remove whitespaces
@@ -285,7 +318,7 @@ impl Minifier {
         block.clone().with_stmts(new_stmts)
     }
 
-    pub fn minify(&self) -> String {
+    pub fn minify(&mut self) -> String {
         let ast = full_moon::parse(self.code.as_str()).expect("parse lua script error");
         let block = ast.nodes();
         let new_block = self.minify_block(block);

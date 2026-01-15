@@ -21,7 +21,7 @@ fn main() {
     println!("Reading file {}...", args.file);
     let file = PathBuf::from(args.file);
     let text = read_to_string(file).expect("read input file error");
-    let minifier = minifier::Minifier::new(&text);
+    let mut minifier = minifier::Minifier::new(&text);
     let result = minifier.minify();
     //println!("{:#?}", new_ast);
     println!("\n=== SCRIPT GENERATED ===\n");

@@ -1,5 +1,9 @@
 use full_moon::{
-    self, ShortString, ast::{Call, Expression, Index, Prefix, Suffix, span::ContainedSpan}, node::Node, tokenizer::{Token, TokenReference, TokenType}
+    self,
+    ast::{span::ContainedSpan, Call, Expression, Index, Prefix, Suffix},
+    node::Node,
+    tokenizer::{Token, TokenReference, TokenType},
+    ShortString,
 };
 
 use crate::minifier::Minifier;
@@ -142,7 +146,9 @@ pub fn trim_suffix(minifier: &Minifier, suffix: &Suffix) -> Suffix {
 
 pub fn append(token_ref: &TokenReference, leading: bool, trailing: bool) -> TokenReference {
     let (mut leading_trivia, mut trailing_trivia) = token_ref.surrounding_trivia();
-    let whitespace_token = Token::new(TokenType::Whitespace { characters: ShortString::new(" ") });
+    let whitespace_token = Token::new(TokenType::Whitespace {
+        characters: ShortString::new(" "),
+    });
     if leading {
         leading_trivia.push(&whitespace_token);
     }
